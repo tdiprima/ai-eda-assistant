@@ -2,7 +2,7 @@
 
 An AI-powered CSV analyzing application that generates insights and exploratory data analysis questions to help you think like a data analyst.
 
-Code from [*"I Built an AI That Thinks Like a Data Analyst — Then It Went Viral. So I Made It Smarter."*](https://medium.com/data-science-collective/i-built-an-ai-that-thinks-like-a-data-analyst-then-it-went-viral-so-i-made-it-smarter-1f3206a8254b) by Mukundan Sankar.
+Some code adapted from the article [*"I Built an AI That Thinks Like a Data Analyst — Then It Went Viral. So I Made It Smarter."*](https://medium.com/data-science-collective/i-built-an-ai-that-thinks-like-a-data-analyst-then-it-went-viral-so-i-made-it-smarter-1f3206a8254b) by Mukundan Sankar.
 
 ## Features
 
@@ -31,12 +31,17 @@ Code from [*"I Built an AI That Thinks Like a Data Analyst — Then It Went Vira
 
 ## Usage
 
-1. Upload a CSV file
-2. Optionally specify your analysis objective
-3. Optionally select key columns to focus on
-4. Review the AI-generated questions
-5. Download questions as Markdown for documentation
+1. Create or select a project session
+2. Upload a CSV file
+3. Get AI-generated analysis questions
+4. Click on any column to get an explanation
+5. Generate follow-up questions for deeper analysis
+6. Create and download summary reports
 
 Perfect for data analysts, students, job seekers preparing for take-home projects, and anyone looking to better understand their datasets.
+
+## Props
+
+Props to Janos Hajagos' Synthea Data: [visit_occurrence.csv](https://raw.githubusercontent.com/jhajagos/SyntheaData520/refs/heads/main/visit_occurrence.csv)
 
 <br>

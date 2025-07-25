@@ -40,7 +40,7 @@ Some code adapted from the article [*"I Built an AI That Thinks Like a Data Anal
 
 Perfect for data analysts, students, job seekers preparing for take-home projects, and anyone looking to better understand their datasets.
 
-## CSV
+## Data
 
 Credit to Janos Hajagos' Synthea Data: [visit_occurrence.csv](https://raw.githubusercontent.com/jhajagos/SyntheaData520/refs/heads/main/visit_occurrence.csv)
 

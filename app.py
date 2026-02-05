@@ -5,7 +5,7 @@ import pandas as pd
 import streamlit as st
 from openai import OpenAI
 
-MODEL = "gpt-4o"
+MODEL = "gpt-5.2"
 
 # Page config
 st.set_page_config(page_title="AI Data Question Generator", layout="wide")

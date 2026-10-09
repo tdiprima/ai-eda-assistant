@@ -40,10 +40,12 @@ The app never sends your raw rows to OpenAI. It sends a compact summary: column 
 ## Setup
 
 ```bash
-pip install -r requirements.txt
+uv sync
 export OPENAI_API_KEY=sk-...
-streamlit run app.py
+uv run streamlit run app.py
 ```
+
+Or without `uv`: `pip install .` then `streamlit run app.py`.
 
 You can also paste the key into the sidebar instead of setting the environment variable.
 

@@ -8,6 +8,14 @@ which keeps prompts small and avoids sending every row to OpenAI.
 import pandas as pd
 
 
+MAX_EXAMPLE_CHARS = 40
+MAX_SUMMARY_CHARS = 8000
+
+
+def _truncate(text: str, limit: int) -> str:
+    return text if len(text) <= limit else text[: limit - 3] + "..."
+
+
 def describe_column(df: pd.DataFrame, column: str) -> str:
     """Return a one-line summary of a single column."""
     series = df[column]
@@ -17,7 +25,7 @@ def describe_column(df: pd.DataFrame, column: str) -> str:
 
     # Show a few example values so the model knows what the data looks like.
     examples = series.dropna().astype(str).unique()[:5]
-    examples_text = ", ".join(examples)
+    examples_text = ", ".join(_truncate(e, MAX_EXAMPLE_CHARS) for e in examples)
 
     line = f"- {column} (type={dtype}, unique={unique}, missing={missing})"
     line += f" examples: {examples_text}"
@@ -43,4 +51,4 @@ def describe_dataset(df: pd.DataFrame, max_columns: int = 60) -> str:
     if cols > max_columns:
         lines.append(f"... and {cols - max_columns} more columns not shown.")
 
-    return "\n".join(lines)
+    return _truncate("\n".join(lines), MAX_SUMMARY_CHARS)

@@ -30,6 +30,7 @@ st.set_page_config(page_title="AI EDA Assistant", page_icon="🔍", layout="wide
 #   {
 #       "name": "Sales data",
 #       "filename": "sales.csv",
+#       "file_id": "<streamlit upload id>",
 #       "df": <DataFrame>,
 #       "question_runs": [ {timestamp, objective, focus_columns, questions}, ... ],
 #       "column_explanations": { "price": "This column ...", ... },
@@ -55,6 +56,7 @@ def create_session(name: str) -> None:
     st.session_state.sessions[session_id] = {
         "name": name,
         "filename": None,
+        "file_id": None,
         "df": None,
         "question_runs": [],
         "column_explanations": {},
@@ -125,10 +127,13 @@ def render_sidebar() -> str:
     sessions = st.session_state.sessions
     if sessions:
         ids = list(sessions)
-        labels = [sessions[i]["name"] for i in ids]
         current_index = ids.index(st.session_state.active_session_id)
-        chosen_label = st.sidebar.radio("Active session", labels, index=current_index)
-        st.session_state.active_session_id = ids[labels.index(chosen_label)]
+        st.session_state.active_session_id = st.sidebar.radio(
+            "Active session",
+            ids,
+            index=current_index,
+            format_func=lambda i: sessions[i]["name"],
+        )
 
         # Delete the active session.
         if st.sidebar.button("🗑️ Delete active session", use_container_width=True):
@@ -160,12 +165,27 @@ def render_sidebar() -> str:
 # Main panel pieces
 # ---------------------------------------------------------------------------
 
-def render_upload(session: dict) -> None:
+def render_upload(session: dict, session_id: int) -> None:
     """Upload a CSV and store it in the session."""
-    uploaded = st.file_uploader("Upload a CSV file", type=["csv"])
-    if uploaded is not None and uploaded.name != session["filename"]:
-        session["df"] = pd.read_csv(uploaded)
+    # Keyed by session so switching sessions never carries a file across.
+    uploaded = st.file_uploader(
+        "Upload a CSV file", type=["csv"], key=f"uploader_{session_id}"
+    )
+    # Compare by upload identity, not filename, so a revised file with the
+    # same name is still picked up.
+    if uploaded is not None and uploaded.file_id != session["file_id"]:
+        try:
+            df = pd.read_csv(uploaded)
+        except (pd.errors.EmptyDataError, pd.errors.ParserError, UnicodeDecodeError) as exc:
+            st.error(f"Could not read {uploaded.name}: {exc}. Upload a valid, non-empty CSV.")
+            return
+        # A new dataset invalidates everything derived from the old one.
+        session["df"] = df
         session["filename"] = uploaded.name
+        session["file_id"] = uploaded.file_id
+        session["question_runs"] = []
+        session["column_explanations"] = {}
+        session["follow_ups"] = []
         st.success(f"Loaded {uploaded.name}")
 
     if session["df"] is not None:
@@ -293,7 +313,7 @@ def main() -> None:
         return
 
     st.title(session["name"])
-    render_upload(session)
+    render_upload(session, st.session_state.active_session_id)
 
     if session["df"] is None:
         st.info("Upload a CSV to continue.")

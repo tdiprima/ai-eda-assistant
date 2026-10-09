@@ -24,7 +24,8 @@ def ask(client: OpenAI, system_prompt: str, user_prompt: str) -> str:
         ],
         temperature=0.7,
     )
-    return response.choices[0].message.content.strip()
+    content = response.choices[0].message.content or ""
+    return content.strip()
 
 
 # ---------------------------------------------------------------------------

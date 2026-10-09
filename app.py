@@ -11,6 +11,7 @@ import os
 import re
 from datetime import datetime
 
+import openai
 import pandas as pd
 import streamlit as st
 
@@ -63,6 +64,7 @@ def create_session(name: str) -> None:
         "follow_ups": [],
     }
     st.session_state.active_session_id = session_id
+    st.session_state.session_picker = session_id
 
 
 def delete_session(session_id: int) -> None:
@@ -71,6 +73,7 @@ def delete_session(session_id: int) -> None:
     if st.session_state.active_session_id == session_id:
         remaining = list(st.session_state.sessions)
         st.session_state.active_session_id = remaining[0] if remaining else None
+        st.session_state.session_picker = st.session_state.active_session_id
 
 
 def get_active_session() -> dict | None:
@@ -97,6 +100,25 @@ def split_numbered_list(markdown_text: str) -> list[str]:
         if cleaned:
             questions.append(cleaned)
     return questions
+
+
+def call_llm(fn, *args) -> str | None:
+    """Run one LLM call. Show an actionable error and return None on failure."""
+    try:
+        text = fn(*args)
+    except openai.APITimeoutError:
+        st.error("OpenAI did not answer in time. Please try again.")
+        return None
+    except openai.AuthenticationError:
+        st.error("OpenAI rejected the API key. Check the key in the sidebar and try again.")
+        return None
+    except openai.OpenAIError as exc:
+        st.error(f"OpenAI request failed: {exc}. Please try again.")
+        return None
+    if not text:
+        st.error("OpenAI returned an empty response. Please try again.")
+        return None
+    return text
 
 
 def get_api_key() -> str:
@@ -127,18 +149,29 @@ def render_sidebar() -> str:
     sessions = st.session_state.sessions
     if sessions:
         ids = list(sessions)
-        current_index = ids.index(st.session_state.active_session_id)
+        # The radio is driven through its own session_state key. Passing a
+        # changing `index` instead would give the widget a new identity on
+        # every switch and silently drop the user's next click.
+        if st.session_state.get("session_picker") not in ids:
+            st.session_state.session_picker = st.session_state.active_session_id
         st.session_state.active_session_id = st.sidebar.radio(
             "Active session",
             ids,
-            index=current_index,
-            format_func=lambda i: sessions[i]["name"],
+            key="session_picker",
+            # Streamlit matches radio choices by label, so two sessions with
+            # the same name would collapse into one. Append the id to keep
+            # every label unique.
+            format_func=lambda i: f"{sessions[i]['name']} (#{i})",
         )
 
-        # Delete the active session.
-        if st.sidebar.button("🗑️ Delete active session", use_container_width=True):
-            delete_session(st.session_state.active_session_id)
-            st.rerun()
+        # Delete the active session. Done in an on_click callback so the
+        # radio's session_state key can be reset before the radio is drawn.
+        st.sidebar.button(
+            "🗑️ Delete active session",
+            use_container_width=True,
+            on_click=delete_session,
+            args=(st.session_state.active_session_id,),
+        )
 
         # Short history of what has happened in this session.
         session = get_active_session()
@@ -209,17 +242,18 @@ def render_question_generator(session: dict, client, dataset_summary: str) -> No
 
     if st.button("✨ Generate questions", type="primary"):
         with st.spinner("Asking OpenAI..."):
-            questions = llm.generate_questions(
-                client, dataset_summary, objective, focus_columns, how_many
+            questions = call_llm(
+                llm.generate_questions, client, dataset_summary, objective, focus_columns, how_many
             )
-        session["question_runs"].append(
-            {
-                "timestamp": now_text(),
-                "objective": objective,
-                "focus_columns": focus_columns,
-                "questions": questions,
-            }
-        )
+        if questions:
+            session["question_runs"].append(
+                {
+                    "timestamp": now_text(),
+                    "objective": objective,
+                    "focus_columns": focus_columns,
+                    "questions": questions,
+                }
+            )
 
     # Show the most recent run and offer a Markdown download.
     if session["question_runs"]:
@@ -249,10 +283,11 @@ def render_column_explainer(session: dict, client, dataset_summary: str) -> None
     column = st.selectbox("Choose a column", options=list(df.columns))
     if st.button("💡 Explain column"):
         with st.spinner("Asking OpenAI..."):
-            explanation = llm.explain_column(
-                client, column, describe_column(df, column), dataset_summary
+            explanation = call_llm(
+                llm.explain_column, client, column, describe_column(df, column), dataset_summary
             )
-        session["column_explanations"][column] = explanation
+        if explanation:
+            session["column_explanations"][column] = explanation
 
     # Show the explanation for the currently selected column, if we have one.
     if column in session["column_explanations"]:
@@ -277,8 +312,9 @@ def render_follow_ups(session: dict, client, dataset_summary: str) -> None:
     chosen = st.selectbox("Choose a question to dig into", options=all_questions)
     if st.button("↪️ Generate follow-ups"):
         with st.spinner("Asking OpenAI..."):
-            follow_ups = llm.generate_follow_ups(client, chosen, dataset_summary)
-        session["follow_ups"].append({"question": chosen, "follow_ups": follow_ups})
+            follow_ups = call_llm(llm.generate_follow_ups, client, chosen, dataset_summary)
+        if follow_ups:
+            session["follow_ups"].append({"question": chosen, "follow_ups": follow_ups})
 
     # Show follow-ups for the chosen question, if any exist.
     for item in reversed(session["follow_ups"]):

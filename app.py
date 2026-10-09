@@ -1,396 +1,324 @@
-# streamlit run app.py
+"""
+AI EDA Assistant - a Streamlit app.
+
+Upload a CSV, and let OpenAI suggest exploratory data analysis questions.
+Work is organised into "sessions" (one per dataset) in the sidebar.
+
+Run with:  streamlit run app.py
+"""
+
+import os
+import re
 from datetime import datetime
 
 import pandas as pd
 import streamlit as st
-from openai import OpenAI
 
-MODEL = "gpt-5.2"
+import llm
+import report
+from data_profile import describe_column, describe_dataset
 
-# Page config
-st.set_page_config(page_title="AI Data Question Generator", layout="wide")
-st.title("Ask the Right Questions: AI-Powered EDA Assistant")
+st.set_page_config(page_title="AI EDA Assistant", page_icon="🔍", layout="wide")
 
-# Initialize session state
-if "sessions" not in st.session_state:
-    st.session_state.sessions = {}
-if "current_session" not in st.session_state:
-    st.session_state.current_session = None
-if "questions" not in st.session_state:
-    st.session_state.questions = []
-if "follow_up_questions" not in st.session_state:
-    st.session_state.follow_up_questions = {}
 
-# API key handling
-api_key = st.secrets.get("OPENAI_API_KEY") or st.text_input(
-    "Enter your OpenAI API Key", type="password"
-)
-if not api_key:
-    st.warning("Please enter your OpenAI API key to continue.")
-    st.stop()
+# ---------------------------------------------------------------------------
+# Session storage
+#
+# All sessions live in st.session_state["sessions"], a dict that maps
+# a session id -> a session dict. A session dict looks like:
+#
+#   {
+#       "name": "Sales data",
+#       "filename": "sales.csv",
+#       "df": <DataFrame>,
+#       "question_runs": [ {timestamp, objective, focus_columns, questions}, ... ],
+#       "column_explanations": { "price": "This column ...", ... },
+#       "follow_ups": [ {question, follow_ups}, ... ],
+#   }
+# ---------------------------------------------------------------------------
 
-client = OpenAI(api_key=api_key)
+def init_state() -> None:
+    """Create the keys we need in session_state if they are missing."""
+    if "sessions" not in st.session_state:
+        st.session_state.sessions = {}
+    if "active_session_id" not in st.session_state:
+        st.session_state.active_session_id = None
+    if "next_session_id" not in st.session_state:
+        st.session_state.next_session_id = 1
 
-# Session management sidebar
-with st.sidebar:
-    st.header("Project Sessions")
 
-    # New session
-    new_session_name = st.text_input("New Session Name")
-    if st.button("Create Session") and new_session_name:
-        st.session_state.sessions[new_session_name] = {
-            "created": datetime.now().isoformat(),
-            "datasets": {},
-            "questions": [],
-            "follow_ups": {},
-        }
-        st.session_state.current_session = new_session_name
+def create_session(name: str) -> None:
+    """Add a new, empty session and make it active."""
+    session_id = st.session_state.next_session_id
+    st.session_state.next_session_id += 1
+
+    st.session_state.sessions[session_id] = {
+        "name": name,
+        "filename": None,
+        "df": None,
+        "question_runs": [],
+        "column_explanations": {},
+        "follow_ups": [],
+    }
+    st.session_state.active_session_id = session_id
+
+
+def delete_session(session_id: int) -> None:
+    """Remove a session. If it was active, switch to another one."""
+    st.session_state.sessions.pop(session_id, None)
+    if st.session_state.active_session_id == session_id:
+        remaining = list(st.session_state.sessions)
+        st.session_state.active_session_id = remaining[0] if remaining else None
+
+
+def get_active_session() -> dict | None:
+    session_id = st.session_state.active_session_id
+    return st.session_state.sessions.get(session_id)
+
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+
+def now_text() -> str:
+    return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def split_numbered_list(markdown_text: str) -> list[str]:
+    """
+    Turn a numbered Markdown list into a list of plain strings.
+    "1. What is X?" -> "What is X?"
+    """
+    questions = []
+    for line in markdown_text.splitlines():
+        cleaned = re.sub(r"^\s*\d+[.)]\s*", "", line).strip()
+        if cleaned:
+            questions.append(cleaned)
+    return questions
+
+
+def get_api_key() -> str:
+    """Read the OpenAI key from the environment, or let the user type it."""
+    key = os.environ.get("OPENAI_API_KEY", "")
+    key = st.sidebar.text_input("OpenAI API key", value=key, type="password")
+    return key
+
+
+# ---------------------------------------------------------------------------
+# Sidebar: API key + session management
+# ---------------------------------------------------------------------------
+
+def render_sidebar() -> str:
+    st.sidebar.title("🔍 AI EDA Assistant")
+    api_key = get_api_key()
+
+    st.sidebar.divider()
+    st.sidebar.subheader("Sessions")
+
+    # Create a new session.
+    new_name = st.sidebar.text_input("New session name", placeholder="e.g. Q3 sales")
+    if st.sidebar.button("➕ Create session", use_container_width=True):
+        create_session(new_name.strip() or f"Session {st.session_state.next_session_id}")
         st.rerun()
 
-    # Select existing session
-    if st.session_state.sessions:
-        session_options = list(st.session_state.sessions.keys())
-        selected_session = st.selectbox(
-            "Select Session",
-            session_options,
-            index=(
-                session_options.index(st.session_state.current_session)
-                if st.session_state.current_session in session_options
-                else 0
-            ),
-        )
-        if selected_session != st.session_state.current_session:
-            st.session_state.current_session = selected_session
+    # Pick which session is active.
+    sessions = st.session_state.sessions
+    if sessions:
+        ids = list(sessions)
+        labels = [sessions[i]["name"] for i in ids]
+        current_index = ids.index(st.session_state.active_session_id)
+        chosen_label = st.sidebar.radio("Active session", labels, index=current_index)
+        st.session_state.active_session_id = ids[labels.index(chosen_label)]
+
+        # Delete the active session.
+        if st.sidebar.button("🗑️ Delete active session", use_container_width=True):
+            delete_session(st.session_state.active_session_id)
             st.rerun()
 
-        # Delete session
-        if st.button("Delete Current Session") and st.session_state.current_session:
-            del st.session_state.sessions[st.session_state.current_session]
-            st.session_state.current_session = None
-            st.rerun()
+        # Short history of what has happened in this session.
+        session = get_active_session()
+        st.sidebar.divider()
+        st.sidebar.subheader("History")
+        if session["filename"]:
+            st.sidebar.write(f"📄 {session['filename']}")
+        for run in reversed(session["question_runs"]):
+            st.sidebar.caption(
+                f"🕒 {run['timestamp']}: questions"
+                + (f" about *{run['objective']}*" if run["objective"] else "")
+            )
+        for column in session["column_explanations"]:
+            st.sidebar.caption(f"💡 explained `{column}`")
+        for item in session["follow_ups"]:
+            st.sidebar.caption(f"↪️ follow-ups for: {item['question'][:40]}...")
+    else:
+        st.sidebar.info("Create a session to get started.")
 
-# Display session history in sidebar
-if st.session_state.current_session and st.session_state.sessions[
-    st.session_state.current_session
-].get("questions"):
-    with st.sidebar:
-        st.subheader("Session History")
-        session_data = st.session_state.sessions[st.session_state.current_session]
-        for i, entry in enumerate(session_data["questions"]):
-            with st.expander(f"Analysis {i+1} - {entry['dataset']}"):
-                st.write(f"**Time:** {entry['timestamp'][:19]}")
-                st.write(f"**Objective:** {entry.get('objective', 'None')}")
-                if entry.get("focus_cols"):
-                    st.write(f"**Focus:** {', '.join(entry['focus_cols'])}")
+    return api_key
 
-# File upload
-if st.session_state.current_session:
-    uploaded_file = st.file_uploader(
-        f"Upload CSV for '{st.session_state.current_session}'", type=["csv"]
-    )
-else:
-    st.warning("Please create or select a session first.")
-    uploaded_file = None
 
-if uploaded_file and st.session_state.current_session:
-    df = pd.read_csv(uploaded_file)
+# ---------------------------------------------------------------------------
+# Main panel pieces
+# ---------------------------------------------------------------------------
 
-    # Store dataset in session
-    dataset_name = uploaded_file.name
-    st.session_state.sessions[st.session_state.current_session]["datasets"][
-        dataset_name
-    ] = {
-        "filename": dataset_name,
-        "shape": df.shape,
-        "columns": df.columns.tolist(),
-        "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
-    }
+def render_upload(session: dict) -> None:
+    """Upload a CSV and store it in the session."""
+    uploaded = st.file_uploader("Upload a CSV file", type=["csv"])
+    if uploaded is not None and uploaded.name != session["filename"]:
+        session["df"] = pd.read_csv(uploaded)
+        session["filename"] = uploaded.name
+        st.success(f"Loaded {uploaded.name}")
 
-    st.success(f"File '{dataset_name}' uploaded successfully!")
-    st.subheader("Data Preview")
-    st.dataframe(df.head())
+    if session["df"] is not None:
+        df = session["df"]
+        st.caption(f"{session['filename']}: {df.shape[0]} rows x {df.shape[1]} columns")
+        with st.expander("Preview data"):
+            st.dataframe(df.head(50), use_container_width=True)
 
-    # Column explanation feature
-    st.subheader("Column Explanation Assistant")
-    col_to_explain = st.selectbox("Select a column to explain:", df.columns.tolist())
-    if st.button("Explain This Column"):
-        with st.spinner("Analyzing column..."):
-            col_data = df[col_to_explain]
-            col_summary = f"Column '{col_to_explain}' has {col_data.count()} non-null values out of {len(col_data)} total. "
 
-            if pd.api.types.is_numeric_dtype(col_data):
-                desc = col_data.describe()
-                col_summary += f"Numeric column with mean={desc['mean']:.2f}, median={desc['50%']:.2f}, std={desc['std']:.2f}, range=[{desc['min']}, {desc['max']}]. "
-            elif pd.api.types.is_datetime64_any_dtype(col_data):
-                col_summary += (
-                    f"Date column ranging from {col_data.min()} to {col_data.max()}. "
-                )
-            else:
-                unique_vals = col_data.nunique()
-                most_common = col_data.value_counts().head(3)
-                col_summary += f"Categorical column with {unique_vals} unique values. Most common: {dict(most_common)}. "
+def render_question_generator(session: dict, client, dataset_summary: str) -> None:
+    """Objective + focus columns -> EDA questions."""
+    st.subheader("1. Generate EDA questions")
+    df = session["df"]
 
-            explain_prompt = f"""Explain what this column likely represents in a dataset and its potential significance for analysis:
-            
-Column name: {col_to_explain}
-Column summary: {col_summary}
-Sample values: {col_data.dropna().head(5).tolist()}
-            
-Provide insights about what this column might mean, how it could be used in analysis, and any data quality considerations."""
-
-            try:
-                explanation_response = client.chat.completions.create(
-                    model=MODEL,
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": "You're a data analyst explaining dataset columns to help users understand their data better.",
-                        },
-                        {"role": "user", "content": explain_prompt},
-                    ],
-                    temperature=0.3,
-                    max_tokens=400,
-                )
-                st.info(explanation_response.choices[0].message.content.strip())
-            except Exception as e:
-                st.error(f"Error explaining column: {e}")
-
-    # Custom objective input
     objective = st.text_input(
-        "Optional: What's your goal or business objective with this dataset?",
-        placeholder="E.g. Understand what drives customer churn",
+        "Analysis objective (optional)",
+        placeholder="e.g. Understand what drives customer churn",
+    )
+    focus_columns = st.multiselect("Focus columns (optional)", options=list(df.columns))
+    how_many = st.slider("Number of questions", 5, 20, 10)
+
+    if st.button("✨ Generate questions", type="primary"):
+        with st.spinner("Asking OpenAI..."):
+            questions = llm.generate_questions(
+                client, dataset_summary, objective, focus_columns, how_many
+            )
+        session["question_runs"].append(
+            {
+                "timestamp": now_text(),
+                "objective": objective,
+                "focus_columns": focus_columns,
+                "questions": questions,
+            }
+        )
+
+    # Show the most recent run and offer a Markdown download.
+    if session["question_runs"]:
+        latest = session["question_runs"][-1]
+        st.markdown(latest["questions"])
+        st.download_button(
+            "⬇️ Export questions as Markdown",
+            data=report.questions_markdown(session, latest),
+            file_name="eda_questions.md",
+            mime="text/markdown",
+        )
+
+        # Older runs are tucked away so the page stays clean.
+        if len(session["question_runs"]) > 1:
+            with st.expander("Previous runs"):
+                for run in reversed(session["question_runs"][:-1]):
+                    st.markdown(f"**{run['timestamp']}** - objective: {run['objective'] or '(none)'}")
+                    st.markdown(run["questions"])
+                    st.divider()
+
+
+def render_column_explainer(session: dict, client, dataset_summary: str) -> None:
+    """Pick a column and get a plain-English explanation of it."""
+    st.subheader("2. Column explainer")
+    df = session["df"]
+
+    column = st.selectbox("Choose a column", options=list(df.columns))
+    if st.button("💡 Explain column"):
+        with st.spinner("Asking OpenAI..."):
+            explanation = llm.explain_column(
+                client, column, describe_column(df, column), dataset_summary
+            )
+        session["column_explanations"][column] = explanation
+
+    # Show the explanation for the currently selected column, if we have one.
+    if column in session["column_explanations"]:
+        st.info(session["column_explanations"][column])
+
+
+def render_follow_ups(session: dict, client, dataset_summary: str) -> None:
+    """Pick one generated question and get deeper follow-up questions."""
+    st.subheader("3. Follow-up questions")
+
+    if not session["question_runs"]:
+        st.caption("Generate some questions first.")
+        return
+
+    # Collect every question from every run, newest first, without duplicates.
+    all_questions: list[str] = []
+    for run in reversed(session["question_runs"]):
+        for q in split_numbered_list(run["questions"]):
+            if q not in all_questions:
+                all_questions.append(q)
+
+    chosen = st.selectbox("Choose a question to dig into", options=all_questions)
+    if st.button("↪️ Generate follow-ups"):
+        with st.spinner("Asking OpenAI..."):
+            follow_ups = llm.generate_follow_ups(client, chosen, dataset_summary)
+        session["follow_ups"].append({"question": chosen, "follow_ups": follow_ups})
+
+    # Show follow-ups for the chosen question, if any exist.
+    for item in reversed(session["follow_ups"]):
+        if item["question"] == chosen:
+            st.markdown(item["follow_ups"])
+            break
+
+
+def render_report_download(session: dict, dataset_summary: str) -> None:
+    """Download everything from the session as one Markdown report."""
+    st.subheader("4. Session report")
+    st.download_button(
+        "⬇️ Download Markdown summary report",
+        data=report.session_report_markdown(session, dataset_summary),
+        file_name=f"eda_report_{session['name'].replace(' ', '_')}.md",
+        mime="text/markdown",
     )
 
-    # Column focus selector
-    focus_cols = st.multiselect(
-        "Optional: Pick key columns to focus the AI's questions on", df.columns.tolist()
-    )
 
-    st.subheader("AI-Generated Questions")
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
-    with st.spinner("Analyzing data and generating questions..."):
-        summary_lines = []
-        for col in df.columns:
-            dtype = str(df[col].dtype)
-            if pd.api.types.is_numeric_dtype(df[col]):
-                desc = df[col].describe()
-                summary_lines.append(
-                    f"- {col} (numeric): mean={desc['mean']:.2f}, min={desc['min']}, max={desc['max']}, std={desc['std']:.2f}"
-                )
-            elif pd.api.types.is_datetime64_any_dtype(df[col]):
-                summary_lines.append(
-                    f"- {col} (date): range={df[col].min()} to {df[col].max()}"
-                )
-            elif pd.api.types.is_string_dtype(df[col]) or df[col].dtype == "object":
-                unique_vals = df[col].nunique()
-                sample_vals = df[col].dropna().unique()[:3]
-                summary_lines.append(
-                    f"- {col} (categorical): {unique_vals} unique values, e.g. {sample_vals}"
-                )
-            else:
-                summary_lines.append(f"- {col} ({dtype})")
+def main() -> None:
+    init_state()
+    api_key = render_sidebar()
 
-        summary_text = "\n".join(summary_lines)
+    session = get_active_session()
+    if session is None:
+        st.title("AI EDA Assistant")
+        st.write("👈 Create a session in the sidebar to begin.")
+        return
 
-        # Build the prompt
-        prompt = f"""
-You're a data analyst reviewing a new dataset. Here's a summary of the columns:
-{summary_text}
-"""
+    st.title(session["name"])
+    render_upload(session)
 
-        if objective:
-            prompt += f"\nThe user's stated objective is: {objective}"
+    if session["df"] is None:
+        st.info("Upload a CSV to continue.")
+        return
 
-        if focus_cols:
-            prompt += f"\nFocus especially on these columns: {', '.join(focus_cols)}"
+    if not api_key:
+        st.warning("Enter your OpenAI API key in the sidebar to use the AI features.")
+        return
 
-        prompt += """
-Based on this structure, suggest 10 insightful questions a data analyst or business user should explore to better understand this dataset. Think about trends, segments, outliers, and relationships.
-"""
+    client = llm.get_client(api_key)
+    dataset_summary = describe_dataset(session["df"])
 
-        # GPT Call
-        try:
-            response = client.chat.completions.create(
-                model=MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You're a helpful and analytical data assistant.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.7,
-                max_tokens=600,
-            )
-            questions = response.choices[0].message.content.strip()
-            st.markdown(questions)
+    st.divider()
+    render_question_generator(session, client, dataset_summary)
+    st.divider()
 
-            # Store questions in session
-            st.session_state.sessions[st.session_state.current_session][
-                "questions"
-            ].append(
-                {
-                    "timestamp": datetime.now().isoformat(),
-                    "dataset": dataset_name,
-                    "questions": questions,
-                    "objective": objective,
-                    "focus_cols": focus_cols,
-                }
-            )
+    left, right = st.columns(2)
+    with left:
+        render_column_explainer(session, client, dataset_summary)
+    with right:
+        render_follow_ups(session, client, dataset_summary)
 
-            # Follow-up questions section
-            st.subheader("Generate Follow-up Questions")
-            question_lines = [
-                line.strip()
-                for line in questions.split("\n")
-                if line.strip() and not line.strip().startswith("#")
-            ]
-            if question_lines:
-                selected_question = st.selectbox(
-                    "Select a question to generate follow-ups for:", question_lines
-                )
-                if st.button("Generate Follow-up Questions"):
-                    with st.spinner("Generating follow-up questions..."):
-                        followup_prompt = f"""Based on this data analysis question: "{selected_question}"
-                        
-And this dataset context: {summary_text}
-                        
-Generate 5 specific follow-up questions that would help dive deeper into this analysis. Focus on actionable insights and practical next steps."""
+    st.divider()
+    render_report_download(session, dataset_summary)
 
-                        try:
-                            followup_response = client.chat.completions.create(
-                                model=MODEL,
-                                messages=[
-                                    {
-                                        "role": "system",
-                                        "content": "You're an expert data analyst who helps generate insightful follow-up questions for deeper analysis.",
-                                    },
-                                    {"role": "user", "content": followup_prompt},
-                                ],
-                                temperature=0.6,
-                                max_tokens=400,
-                            )
-                            follow_ups = followup_response.choices[
-                                0
-                            ].message.content.strip()
-                            st.markdown("**Follow-up Questions:**")
-                            st.markdown(follow_ups)
 
-                            # Store follow-ups
-                            if (
-                                selected_question
-                                not in st.session_state.sessions[
-                                    st.session_state.current_session
-                                ]["follow_ups"]
-                            ):
-                                st.session_state.sessions[
-                                    st.session_state.current_session
-                                ]["follow_ups"][selected_question] = []
-                            st.session_state.sessions[st.session_state.current_session][
-                                "follow_ups"
-                            ][selected_question].append(
-                                {
-                                    "timestamp": datetime.now().isoformat(),
-                                    "follow_ups": follow_ups,
-                                }
-                            )
-                        except Exception as e:
-                            st.error(f"Error generating follow-ups: {e}")
-
-            # Auto-generate summary report
-            st.subheader("Summary Report")
-            if st.button("Generate Summary Report"):
-                with st.spinner("Creating summary report..."):
-                    session_data = st.session_state.sessions[
-                        st.session_state.current_session
-                    ]
-
-                    report_prompt = f"""Create a comprehensive markdown summary report for this data analysis session:
-                    
-Dataset: {dataset_name}
-Shape: {df.shape[0]} rows, {df.shape[1]} columns
-Objective: {objective or 'General exploratory analysis'}
-Focus columns: {', '.join(focus_cols) if focus_cols else 'All columns'}
-                    
-Data summary:
-{summary_text}
-                    
-Generated questions:
-{questions}
-                    
-Create a professional report that includes:
-1. Executive Summary
-2. Dataset Overview
-3. Key Questions for Analysis
-4. Recommended Next Steps
-5. Data Quality Observations
-                    
-Format it as a clean, professional markdown document."""
-
-                    try:
-                        report_response = client.chat.completions.create(
-                            model=MODEL,
-                            messages=[
-                                {
-                                    "role": "system",
-                                    "content": "You're a senior data analyst creating professional analysis reports.",
-                                },
-                                {"role": "user", "content": report_prompt},
-                            ],
-                            temperature=0.3,
-                            max_tokens=1200,
-                        )
-                        report_content = report_response.choices[
-                            0
-                        ].message.content.strip()
-                        st.markdown("**Generated Summary Report:**")
-                        st.markdown(report_content)
-
-                        # Download report
-                        report_filename = f"{st.session_state.current_session}_{dataset_name.replace('.csv', '')}_report.md"
-                        st.download_button(
-                            "Download Summary Report",
-                            data=report_content,
-                            file_name=report_filename,
-                            mime="text/markdown",
-                        )
-
-                    except Exception as e:
-                        st.error(f"Error generating report: {e}")
-
-            # Enhanced Markdown Export
-            session_data = st.session_state.sessions[st.session_state.current_session]
-            md_export = f"""# AI-Generated EDA Questions - {st.session_state.current_session}
-
-**Dataset:** {dataset_name}
-**Generated:** {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
-**Objective:** {objective or 'General exploratory analysis'}
-
-## Initial Questions
-{questions}
-
-## Follow-up Questions
-"""
-
-            for question, followups in session_data.get("follow_ups", {}).items():
-                if followups:
-                    md_export += f"\n### {question}\n{followups[-1]['follow_ups']}\n"
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.download_button(
-                    "Download Questions (Markdown)",
-                    data=f"# AI-Generated EDA Questions\n\n{questions}",
-                    file_name="eda_questions.md",
-                    mime="text/markdown",
-                )
-            with col2:
-                st.download_button(
-                    "Download Complete Analysis",
-                    data=md_export,
-                    file_name=f"{st.session_state.current_session}_complete_analysis.md",
-                    mime="text/markdown",
-                )
-
-        except Exception as e:
-            st.error(f"Error: {e}")
+if __name__ == "__main__":
+    main()

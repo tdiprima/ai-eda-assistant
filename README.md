@@ -1,43 +1,61 @@
 # AI EDA Assistant
 
-An AI-powered CSV analyzing application that generates insights and exploratory data analysis questions to help you think like a data analyst.
+A Streamlit app that reads your CSV and uses OpenAI to tell you **what questions to ask of your data** before you start plotting.
 
-Some code adapted from the article [*"I Built an AI That Thinks Like a Data Analyst — Then It Went Viral. So I Made It Smarter."*](https://medium.com/data-science-collective/i-built-an-ai-that-thinks-like-a-data-analyst-then-it-went-viral-so-i-made-it-smarter-1f3206a8254b) by Mukundan Sankar.
+## The problem it solves
+
+You get a new dataset. You open it, see 40 columns, and freeze. What matters? Where do you start? Experienced analysts carry a mental checklist of exploratory data analysis (EDA) questions. This app gives you that checklist, tailored to *your* columns and *your* goal.
+
+## Example use case
+
+A marketing analyst receives `customers.csv` with signup dates, plan tiers, monthly spend, support tickets, and a churn flag. Their manager asks: "Why are customers leaving?"
+
+1. **Create a session** named "Churn investigation" and upload the CSV.
+2. **Set the objective** to "Understand what drives customer churn" and pick `churned`, `plan_tier`, and `support_tickets` as focus columns.
+3. **Generate questions.** The app returns a list such as:
+   - How does churn rate differ across plan tiers?
+   - Is there a threshold of support tickets after which churn jumps?
+   - Do customers who signed up in a particular month churn more?
+4. **Explain a column.** Unsure what `plan_tier` codes mean? The column explainer looks at its values and tells you it is likely a categorical subscription level, and flags that 12% of rows are missing.
+5. **Dig deeper.** Pick "Is there a threshold of support tickets after which churn jumps?" and generate follow-ups, such as whether ticket *type* or *resolution time* matters more than count.
+6. **Export.** Download the questions as Markdown for your notebook, or download the full session report to share with your manager.
+
+The analyst now has a focused plan instead of a blank page.
 
 ## Features
 
-- Upload CSV files for analysis
-- AI-generated exploratory questions tailored to your dataset
-- Custom objective input to focus questions on specific goals
-- Column focus selector to zoom in on key variables
-- Export questions to Markdown format
-- Clean, intuitive Streamlit interface
+| Feature | What it does |
+|---|---|
+| Sessions | Sidebar create/delete. Each session holds one CSV plus its full history. |
+| Question generation | Objective and focus columns steer the questions. Adjustable count. |
+| Markdown export | One click to download the latest question list. |
+| Column explainer | Plain-English guess at what a column represents, plus quality concerns. |
+| Follow-up questions | Pick any generated question and get deeper questions. |
+| Session report | Downloadable Markdown summary of everything done in the session. |
+
+## Privacy note
+
+The app never sends your raw rows to OpenAI. It sends a compact summary: column names, types, counts, a few example values, and basic statistics. See `data_profile.py`.
 
 ## Setup
 
-1. Install dependencies:
+```bash
+pip install -r requirements.txt
+export OPENAI_API_KEY=sk-...
+streamlit run app.py
+```
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+You can also paste the key into the sidebar instead of setting the environment variable.
 
-2. Run the application:
+## Project layout
 
-   ```bash
-   streamlit run app.py
-   ```
+| File | Purpose |
+|---|---|
+| `app.py` | Streamlit UI and session state |
+| `llm.py` | All OpenAI prompts and calls (change the model here) |
+| `data_profile.py` | Turns a DataFrame into the text summary sent to the model |
+| `report.py` | Builds the Markdown for both download buttons |
 
-3. Set your OpenAI API key in Streamlit secrets: `.streamlit/secrets.toml`
-
-## Usage
-
-1. Create or select a project session
-2. Upload a CSV file
-3. Get AI-generated analysis questions
-4. Click on any column to get an explanation
-5. Generate follow-up questions for deeper analysis
-6. Create and download summary reports
-
-Perfect for data analysts, students, job seekers preparing for take-home projects, and anyone looking to better understand their datasets.
+The code favours clarity over cleverness. Each file has one job, and each function has a short docstring saying what it does.
 
 <br>

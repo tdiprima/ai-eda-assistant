@@ -1,4 +1,4 @@
-# AI EDA Assistant
+# AI EDA Assistant 📊
 
 A Streamlit app that reads your CSV and uses OpenAI to tell you **what questions to ask of your data** before you start plotting.
 

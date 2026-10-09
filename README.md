@@ -61,7 +61,7 @@ You can also paste the key into the sidebar instead of setting the environment v
 The code favours clarity over cleverness. Each file has one job, and each function has a short docstring saying what it does.
 
 <!--
-UV_PYTHON=/usr/local/bin/python3.10 uv run pytest
+uv run pytest
 -->
 
 <br>
